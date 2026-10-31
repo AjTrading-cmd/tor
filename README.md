@@ -35,9 +35,16 @@ Pass the folder containing your `.mkv` files:
 ### Options
 
 - `--keep-originals`: Save converted files as `<filename>_stereo.mkv` instead of overwriting the original `.mkv` files.
+- `--test [MB]`: Only process the first `500` MB of video (or specify a custom size in MB) and save the result as `<filename>_test.mkv` without modifying the original file.
+- `--clev <FLOAT>`: Set the center (dialogue/voice) mix level when downmixing surround audio to stereo (default: `0.354`, ~50% of `0.707`).
+- `--slev <FLOAT>`: Set the surround mix level when downmixing surround audio to stereo (default: `1.0`).
 - `--lfe <FLOAT>`: Set the LFE (subwoofer bass) mix level when downmixing surround audio to stereo (default: `0.707`).
   ```bash
-  ./convert_mkv_audio_to_stereo.py /path/to/movies --keep-originals --lfe 0.5
+  # Generate a 500 MB *_test.mkv sample to test audio levels
+  ./convert_mkv_audio_to_stereo.py /path/to/movies --test
+
+  # Full conversion with custom mix levels
+  ./convert_mkv_audio_to_stereo.py /path/to/movies --keep-originals --clev 0.354 --slev 1.0 --lfe 0.5
   ```
 
 ---

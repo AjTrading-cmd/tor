@@ -100,7 +100,10 @@ def convert_english_to_aac_dplii(
     temp_path: Path,
     duration: float,
     keep_audio_indices: list[int],
-    lfe_level: float
+    lfe_level: float,
+    clev: float = 0.354,
+    slev: float = 1.0,
+    max_size_mb: int | None = None
 ):
     """
     Copies video, subtitles, and attachments, maps ONLY the kept English audio
@@ -108,7 +111,7 @@ def convert_english_to_aac_dplii(
     """
     aresample_filter = (
         f"aresample=ocl=stereo:matrix_encoding=dplii:"
-        f"lfe_mix_level={lfe_level}:clev=0.707:slev=0.707"
+        f"lfe_mix_level={lfe_level}:clev={clev}:slev={slev}"
     )
 
     cmd = [
@@ -132,6 +135,12 @@ def convert_english_to_aac_dplii(
         "-c:a", "aac",
         "-ac", "2",
         "-b:a", "256k",
+    ])
+
+    if max_size_mb is not None:
+        cmd.extend(["-fs", f"{max_size_mb}M"])
+
+    cmd.extend([
         "-progress", "pipe:1",
         "-nostats",
         "-loglevel", "error",
@@ -146,13 +155,19 @@ def convert_english_to_aac_dplii(
         bufsize=1
     )
 
+    target_bytes = max_size_mb * 1024 * 1024 if max_size_mb is not None else None
     start_time = time.monotonic()
     draw_progress_bar(input_path.name, 0.0, start_time)
 
     try:
         for line in process.stdout:
             line = line.strip()
-            if line.startswith("out_time_us="):
+            if target_bytes is not None and line.startswith("total_size="):
+                val = line.split("=")[1]
+                if val.isdigit() and target_bytes > 0:
+                    current_bytes = int(val)
+                    draw_progress_bar(input_path.name, current_bytes / target_bytes, start_time)
+            elif target_bytes is None and line.startswith("out_time_us="):
                 val = line.split("=")[1]
                 if val.isdigit() and duration > 0:
                     out_time_sec = int(val) / 1_000_000.0
@@ -220,28 +235,58 @@ def main():
         default=0.707,
         help="LFE (subwoofer bass) mix level (default: 0.707)"
     )
+    parser.add_argument(
+        "--clev",
+        type=float,
+        default=0.354,
+        help="Center (dialogue/voice) mix level (default: 0.354, ~50%% of 0.707)"
+    )
+    parser.add_argument(
+        "--slev",
+        type=float,
+        default=1.0,
+        help="Surround mix level (default: 1.0)"
+    )
+    parser.add_argument(
+        "--test",
+        nargs="?",
+        const=500,
+        type=int,
+        metavar="MB",
+        help="Only process the first N MB of video (default: 500 MB) and output as *_test.mkv"
+    )
     args = parser.parse_args()
 
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         print("Error: 'ffmpeg' and 'ffprobe' must be installed. Run: sudo apt install ffmpeg")
         sys.exit(1)
 
-    target_dir = Path(args.folder).expanduser().resolve()
-    if not target_dir.is_dir():
-        print(f"Error: Directory not found: {target_dir}")
+    target_Path = Path(args.folder).expanduser().resolve()
+    if target_Path.is_file() and target_Path.suffix.lower() == ".mkv":
+        target_dir = target_Path.parent
+        mkv_files = [target_Path]
+    elif target_Path.is_dir():
+        target_dir = target_Path
+        mkv_files = sorted([
+            f for f in target_dir.rglob("*.mkv")
+            if f.is_file()
+            and not f.name.endswith(".temp_stereo.mkv")
+            and not f.name.endswith("_test.mkv")
+        ])
+    else:
+        print(f"Error: Directory or .mkv file not found: {target_Path}")
         sys.exit(1)
-
-    mkv_files = sorted([
-        f for f in target_dir.rglob("*.mkv")
-        if f.is_file() and not f.name.endswith(".temp_stereo.mkv")
-    ])
 
     if not mkv_files:
         print(f"No .mkv files found in {target_dir} (including subdirectories)")
         sys.exit(0)
 
     print(f"Found {len(mkv_files)} .mkv file(s) in '{target_dir}' (including subdirectories)")
-    print(f"Profile: English-Only | matrix_encoding=dplii | lfe_mix_level={args.lfe}\n")
+    test_info = f" | test_mode={args.test}MB (*_test.mkv)" if args.test else ""
+    print(
+        f"Profile: English-Only | matrix_encoding=dplii | "
+        f"clev={args.clev} | slev={args.slev} | lfe_mix_level={args.lfe}{test_info}\n"
+    )
 
     summary_rows = []
 
@@ -314,10 +359,16 @@ def main():
                 temp_output,
                 duration,
                 keep_indices,
-                args.lfe
+                args.lfe,
+                args.clev,
+                args.slev,
+                max_size_mb=args.test
             )
 
-            if args.keep_originals:
+            if args.test is not None:
+                final_path = mkv_file.with_name(f"{mkv_file.stem}_test.mkv")
+                temp_output.replace(final_path)
+            elif args.keep_originals:
                 final_path = mkv_file.with_name(f"{mkv_file.stem}_stereo.mkv")
                 temp_output.replace(final_path)
             else:
@@ -335,7 +386,10 @@ def main():
             for t_idx, b_stream in enumerate(before_streams):
                 fname_col = rel_name if t_idx == 0 else ""
                 if b_stream["audio_rel_index"] in keep_indices:
-                    status = "Converted (Fallback UND)" if used_fallback else "Converted & Kept"
+                    if args.test is not None:
+                        status = f"Test Sample ({args.test}MB -> {final_path.name})"
+                    else:
+                        status = "Converted (Fallback UND)" if used_fallback else "Converted & Kept"
                     summary_rows.append([
                         fname_col,
                         f"#{t_idx + 1}",
