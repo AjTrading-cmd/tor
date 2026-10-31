@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ENGLISH_CODES = {"ENG", "EN", "ENGLISH"}
@@ -65,14 +66,32 @@ def get_media_info(file_path: Path):
     return duration, audio_streams
 
 
-def draw_progress_bar(filename: str, progress: float, bar_width: int = 30):
-    """Renders an in-place terminal progress bar."""
+def format_time(seconds: float) -> str:
+    """Formats seconds as H:MM:SS."""
+    seconds = int(max(seconds, 0))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+def draw_progress_bar(filename: str, progress: float, start_time: float, bar_width: int = 30):
+    """Renders an in-place terminal progress bar with elapsed time and ETA."""
     progress = min(max(progress, 0.0), 1.0)
     filled = int(bar_width * progress)
     bar = "█" * filled + "░" * (bar_width - filled)
     percent = progress * 100
+    elapsed = time.monotonic() - start_time
+    if progress >= 1.0:
+        eta_str = "0:00:00"
+    elif progress > 0.0 and elapsed > 0:
+        eta_str = format_time(elapsed * (1.0 - progress) / progress)
+    else:
+        eta_str = "--:--:--"
     display_name = (filename[:32] + "...") if len(filename) > 35 else filename.ljust(35)
-    sys.stdout.write(f"\r  {display_name} [{bar}] {percent:6.2f}%")
+    sys.stdout.write(
+        f"\r  {display_name} [{bar}] {percent:6.2f}% "
+        f"Elapsed: {format_time(elapsed)} ETA: {eta_str}\033[K"
+    )
     sys.stdout.flush()
 
 
@@ -127,7 +146,8 @@ def convert_english_to_aac_dplii(
         bufsize=1
     )
 
-    draw_progress_bar(input_path.name, 0.0)
+    start_time = time.monotonic()
+    draw_progress_bar(input_path.name, 0.0, start_time)
 
     try:
         for line in process.stdout:
@@ -136,9 +156,9 @@ def convert_english_to_aac_dplii(
                 val = line.split("=")[1]
                 if val.isdigit() and duration > 0:
                     out_time_sec = int(val) / 1_000_000.0
-                    draw_progress_bar(input_path.name, out_time_sec / duration)
+                    draw_progress_bar(input_path.name, out_time_sec / duration, start_time)
             elif line == "progress=end":
-                draw_progress_bar(input_path.name, 1.0)
+                draw_progress_bar(input_path.name, 1.0, start_time)
 
         process.wait()
         print()  # Newline after progress bar finishes
