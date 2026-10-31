@@ -6,7 +6,7 @@ Utilities for processing and transferring `.mkv` media files.
 
 ## 1. Convert MKV Audio to Stereo (`convert_mkv_audio_to_stereo.py`)
 
-Use `convert_mkv_audio_to_stereo.py` to batch-convert English audio tracks in `.mkv` files to 256k AAC 2.0 Stereo (using Dolby Pro Logic II matrix downmixing and LFE bass mixing) while stripping non-English audio tracks and preserving video, subtitles, and attachments without re-encoding video.
+Use `convert_mkv_audio_to_stereo.py` to batch-convert English audio tracks in `.mkv` files (including those in subdirectories) to 256k AAC 2.0 Stereo (using Dolby Pro Logic II matrix downmixing and LFE bass mixing) while stripping non-English audio tracks and preserving video, subtitles, and attachments without re-encoding video.
 
 ### Prerequisites
 

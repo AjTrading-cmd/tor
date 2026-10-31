@@ -207,7 +207,7 @@ def main():
     parser.add_argument(
         "folder",
         type=str,
-        help="Path to the folder containing .mkv files"
+        help="Path to the folder containing .mkv files (searches subdirectories recursively)"
     )
     parser.add_argument(
         "--keep-originals",
@@ -232,32 +232,33 @@ def main():
         sys.exit(1)
 
     mkv_files = sorted([
-        f for f in target_dir.glob("*.mkv")
-        if not f.name.endswith(".temp_stereo.mkv")
+        f for f in target_dir.rglob("*.mkv")
+        if f.is_file() and not f.name.endswith(".temp_stereo.mkv")
     ])
 
     if not mkv_files:
-        print(f"No .mkv files found in {target_dir}")
+        print(f"No .mkv files found in {target_dir} (including subdirectories)")
         sys.exit(0)
 
-    print(f"Found {len(mkv_files)} .mkv file(s) in '{target_dir}'")
+    print(f"Found {len(mkv_files)} .mkv file(s) in '{target_dir}' (including subdirectories)")
     print(f"Profile: English-Only | matrix_encoding=dplii | lfe_mix_level={args.lfe}\n")
 
     summary_rows = []
 
     for idx, mkv_file in enumerate(mkv_files, start=1):
-        print(f"[{idx}/{len(mkv_files)}] Processing: {mkv_file.name}")
+        rel_name = str(mkv_file.relative_to(target_dir))
+        print(f"[{idx}/{len(mkv_files)}] Processing: {rel_name}")
 
         try:
             duration, before_streams = get_media_info(mkv_file)
         except Exception as e:
-            print(f"  [!] Skipping {mkv_file.name}: {e}")
-            summary_rows.append([mkv_file.name, "-", "-", "ERROR", "ERROR", "Failed (Probe)"])
+            print(f"  [!] Skipping {rel_name}: {e}")
+            summary_rows.append([rel_name, "-", "-", "ERROR", "ERROR", "Failed (Probe)"])
             continue
 
         if not before_streams:
-            print(f"  [!] No audio tracks found in {mkv_file.name}, skipping.")
-            summary_rows.append([mkv_file.name, "None", "-", "No Audio", "No Audio", "Skipped"])
+            print(f"  [!] No audio tracks found in {rel_name}, skipping.")
+            summary_rows.append([rel_name, "None", "-", "No Audio", "No Audio", "Skipped"])
             continue
 
         # 1. Identify English tracks
@@ -272,10 +273,10 @@ def main():
                 eng_streams = und_streams
                 used_fallback = True
             else:
-                print(f"  [!] No English or Undefined audio tracks found in {mkv_file.name}! Skipping to avoid stripping all audio.")
+                print(f"  [!] No English or Undefined audio tracks found in {rel_name}! Skipping to avoid stripping all audio.")
                 for t_idx, s in enumerate(before_streams):
                     summary_rows.append([
-                        mkv_file.name if t_idx == 0 else "",
+                        rel_name if t_idx == 0 else "",
                         f"#{t_idx + 1}",
                         s["lang"],
                         s["format_str"],
@@ -296,7 +297,7 @@ def main():
             print("  [*] Already English-only AAC Stereo. Skipping.")
             for t_idx, s in enumerate(before_streams):
                 summary_rows.append([
-                    mkv_file.name if t_idx == 0 else "",
+                    rel_name if t_idx == 0 else "",
                     f"#{t_idx + 1}",
                     s["lang"],
                     s["format_str"],
@@ -332,7 +333,7 @@ def main():
 
             # Log every original track and what happened to it
             for t_idx, b_stream in enumerate(before_streams):
-                fname_col = mkv_file.name if t_idx == 0 else ""
+                fname_col = rel_name if t_idx == 0 else ""
                 if b_stream["audio_rel_index"] in keep_indices:
                     status = "Converted (Fallback UND)" if used_fallback else "Converted & Kept"
                     summary_rows.append([
@@ -354,12 +355,12 @@ def main():
                     ])
 
         except Exception as e:
-            print(f"  [!] Error converting {mkv_file.name}: {e}")
+            print(f"  [!] Error converting {rel_name}: {e}")
             if temp_output.exists():
                 temp_output.unlink()
             for t_idx, b_stream in enumerate(before_streams):
                 summary_rows.append([
-                    mkv_file.name if t_idx == 0 else "",
+                    rel_name if t_idx == 0 else "",
                     f"#{t_idx + 1}",
                     b_stream["lang"],
                     b_stream["format_str"],
