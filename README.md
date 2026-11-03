@@ -49,9 +49,9 @@ Pass the folder containing your `.mkv` files:
 
 ---
 
-## 2. Rsync MKV Files to a Remote Server (`rsync_mkv_to_remote.py`)
+## 2. Rsync Video Files to a Remote Server (`rsync_mkv_to_remote.py`)
 
-Use `rsync_mkv_to_remote.py` to sync all `.mkv` files from a local directory on Linux Mint to a destination directory on a remote Debian server over SSH with a live progress bar and transfer summary table.
+Use `rsync_mkv_to_remote.py` to sync all `.mkv` and `.mp4` video files (including those in subdirectories, while ignoring all non-video files) from a local directory on Linux Mint to a destination directory on a remote Debian server over SSH with a live progress bar and transfer summary table.
 
 ### Prerequisites
 
@@ -82,12 +82,12 @@ You can also combine the remote server and path using standard `user@host:/path`
 
 ### Options
 
-- `-n`, `--dry-run`: Preview which `.mkv` files will be transferred without making any changes.
+- `-n`, `--dry-run`: Preview which `.mkv` and `.mp4` files will be transferred without making any changes.
   ```bash
   ./rsync_mkv_to_remote.py /path/to/local/movies user@debian-server /path/to/remote/movies --dry-run
   ```
-- `-r`, `--recursive`: Include `.mkv` files located in subdirectories (preserving relative folder structure on the remote server).
+- `--no-recursive`: Only search the top-level directory (subdirectory recursion is enabled by default).
 - `-p`, `--port <PORT>`: Specify a custom SSH port (default: `22`).
 - `-i`, `--identity <KEY_FILE>`: Specify a custom SSH private key file (e.g., `~/.ssh/id_ed25519`).
-- `--remove-source-files`: Delete local `.mkv` files after they have been successfully transferred to the remote server.
+- `--remove-source-files`: Delete local `.mkv`/`.mp4` files after they have been successfully transferred to the remote server.
 

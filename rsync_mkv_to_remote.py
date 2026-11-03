@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 PROGRESS_RE = re.compile(r"^\s*(\d+)\s+(\d+)%\s+(\S+/s)\s+(\S+)")
+VIDEO_EXTENSIONS = {".mkv", ".mp4"}
 
 
 def format_time(seconds: float) -> str:
@@ -59,19 +60,19 @@ def draw_progress_bar(
 
 def sync_single_file(
     source_dir: Path,
-    mkv_file: Path,
+    video_file: Path,
     destination: str,
     ssh_cmd: list[str],
     dry_run: bool,
     remove_source_files: bool
 ) -> tuple[str, str, float, bool]:
     """
-    Rsyncs a single .mkv file while rendering a live progress bar with Elapsed & ETA.
+    Rsyncs a single video file (.mkv/.mp4) while rendering a live progress bar with Elapsed & ETA.
     Returns (status_str, last_speed_str, elapsed_seconds, was_transferred).
     """
-    rel_path = mkv_file.relative_to(source_dir)
+    rel_path = video_file.relative_to(source_dir)
     display_name = str(rel_path)
-    file_size = mkv_file.stat().st_size
+    file_size = video_file.stat().st_size
 
     cmd = [
         "rsync",
@@ -204,12 +205,12 @@ def print_summary_table(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Rsync all .mkv files from a local directory to a directory on a remote server."
+        description="Rsync all .mkv and .mp4 video files (including subdirectories) from a local directory to a remote server."
     )
     parser.add_argument(
         "source_dir",
         type=str,
-        help="Path to the local directory containing .mkv files"
+        help="Path to the local directory containing .mkv and .mp4 files (searches subdirectories recursively)"
     )
     parser.add_argument(
         "remote_server",
@@ -239,7 +240,14 @@ def parse_args():
     parser.add_argument(
         "-r", "--recursive",
         action="store_true",
-        help="Recursively find and sync .mkv files in subdirectories"
+        default=True,
+        help="Recursively find and sync .mkv/.mp4 files in subdirectories (enabled by default)"
+    )
+    parser.add_argument(
+        "--no-recursive",
+        action="store_false",
+        dest="recursive",
+        help="Do not search subdirectories"
     )
     parser.add_argument(
         "-n", "--dry-run",
@@ -249,7 +257,7 @@ def parse_args():
     parser.add_argument(
         "--remove-source-files",
         action="store_true",
-        help="Remove local .mkv files after they are successfully transferred"
+        help="Remove local .mkv/.mp4 files after they are successfully transferred"
     )
     return parser.parse_args()
 
@@ -283,13 +291,15 @@ def main():
         sys.exit(1)
 
     glob_func = source_dir.rglob if args.recursive else source_dir.glob
-    mkv_files = sorted([
-        f for f in glob_func("*.mkv")
-        if f.is_file() and not f.name.endswith(".temp_stereo.mkv")
+    video_files = sorted([
+        f for f in glob_func("*")
+        if f.is_file()
+        and f.suffix.lower() in VIDEO_EXTENSIONS
+        and not f.name.endswith(".temp_stereo.mkv")
     ])
 
-    if not mkv_files:
-        print(f"No .mkv files found in '{source_dir}'")
+    if not video_files:
+        print(f"No .mkv or .mp4 video files found in '{source_dir}'")
         sys.exit(0)
 
     # Reuse a single SSH connection across files so credentials are only requested once
@@ -308,9 +318,12 @@ def main():
         ssh_cmd.extend(["-i", str(identity_path)])
 
     destination = f"{remote_host}:{remote_path}"
-    total_size = sum(f.stat().st_size for f in mkv_files)
+    total_size = sum(f.stat().st_size for f in video_files)
 
-    print(f"Found {len(mkv_files)} .mkv file(s) ({format_size(total_size)}) in '{source_dir}'")
+    print(
+        f"Found {len(video_files)} video file(s) (.mkv/.mp4, {format_size(total_size)}) "
+        f"in '{source_dir}' (including subdirectories)"
+    )
     print(f"Destination: {destination}")
     if args.dry_run:
         print("Mode: DRY RUN (no files will be modified)\n")
@@ -324,15 +337,15 @@ def main():
     total_bytes_synced = 0
     overall_start = time.monotonic()
 
-    for idx, mkv_file in enumerate(mkv_files, start=1):
-        rel_name = str(mkv_file.relative_to(source_dir))
-        file_size = mkv_file.stat().st_size
-        print(f"[{idx}/{len(mkv_files)}] Syncing: {rel_name} ({format_size(file_size)})")
+    for idx, video_file in enumerate(video_files, start=1):
+        rel_name = str(video_file.relative_to(source_dir))
+        file_size = video_file.stat().st_size
+        print(f"[{idx}/{len(video_files)}] Syncing: {rel_name} ({format_size(file_size)})")
 
         try:
             status, speed_str, elapsed, transferred = sync_single_file(
                 source_dir=source_dir,
-                mkv_file=mkv_file,
+                video_file=video_file,
                 destination=destination,
                 ssh_cmd=ssh_cmd,
                 dry_run=args.dry_run,
@@ -365,7 +378,7 @@ def main():
     overall_elapsed = time.monotonic() - overall_start
     print_summary_table(
         results=summary_rows,
-        total_files=len(mkv_files),
+        total_files=len(video_files),
         synced_count=synced_count,
         skipped_count=skipped_count,
         failed_count=failed_count,
