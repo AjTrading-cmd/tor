@@ -67,16 +67,16 @@ def sync_single_file(
     remove_source_files: bool
 ) -> tuple[str, str, float, bool]:
     """
-    Rsyncs a single video file (.mkv/.mp4) while rendering a live progress bar with Elapsed & ETA.
+    Rsyncs a single video file (.mkv/.mp4) directly into destination (without creating parent subdirectories)
+    while rendering a live progress bar with Elapsed & ETA.
     Returns (status_str, last_speed_str, elapsed_seconds, was_transferred).
     """
-    rel_path = video_file.relative_to(source_dir)
-    display_name = str(rel_path)
+    display_name = video_file.name
     file_size = video_file.stat().st_size
 
     cmd = [
         "rsync",
-        "-avR",
+        "-av",
         "--itemize-changes",
         "--no-human-readable",
         "--progress",
@@ -91,9 +91,8 @@ def sync_single_file(
     if remove_source_files:
         cmd.append("--remove-source-files")
 
-    # Using /./ with -R preserves relative subdirectory paths inside source_dir
-    source_arg = f"{source_dir}/./{rel_path}"
-    cmd.extend([source_arg, f"{destination}/"])
+    # Copy only the video file itself directly into destination/ without its parent directory
+    cmd.extend([str(video_file), f"{destination}/"])
 
     process = subprocess.Popen(
         cmd,
@@ -203,27 +202,96 @@ def print_summary_table(
     print("=" * len(separator) + "\n")
 
 
+def prompt_file_selection(video_entries: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    """
+    Displays a numbered list of discovered video files and prompts the user to select
+    which files to sync (supports single numbers, comma/space lists, ranges like 1-3, or 'all').
+    """
+    print("\nAvailable video files:")
+    for idx, (vf, rel_name) in enumerate(video_entries, start=1):
+        size_str = format_size(vf.stat().st_size)
+        print(f"  [{idx}] {rel_name} ({size_str})")
+
+    while True:
+        try:
+            raw = input(
+                "\nSelect file(s) to sync (e.g., 1,3 or 1-3, 'all', or 'q' to cancel): "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            sys.exit(0)
+
+        if not raw or raw.lower() in ("q", "quit", "exit"):
+            print("Cancelled.")
+            sys.exit(0)
+
+        if raw.lower() in ("a", "all", "*"):
+            return video_entries
+
+        selected_indices: list[int] = []
+        valid = True
+        tokens = [t for part in raw.split(",") for t in part.split()]
+        if not tokens:
+            valid = False
+
+        for token in tokens:
+            if "-" in token:
+                parts = token.split("-", 1)
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    start_i, end_i = int(parts[0]), int(parts[1])
+                    if 1 <= start_i <= end_i <= len(video_entries):
+                        for i in range(start_i, end_i + 1):
+                            if i not in selected_indices:
+                                selected_indices.append(i)
+                        continue
+                print(f"  [!] Invalid range: '{token}' (choose between 1 and {len(video_entries)})")
+                valid = False
+                break
+            elif token.isdigit():
+                idx = int(token)
+                if 1 <= idx <= len(video_entries):
+                    if idx not in selected_indices:
+                        selected_indices.append(idx)
+                else:
+                    print(f"  [!] Number out of range: {idx} (choose between 1 and {len(video_entries)})")
+                    valid = False
+                    break
+            else:
+                print(f"  [!] Invalid selection: '{token}'")
+                valid = False
+                break
+
+        if valid and selected_indices:
+            print()
+            return [video_entries[i - 1] for i in selected_indices]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Rsync all .mkv and .mp4 video files (including subdirectories) from a local directory to a remote server."
+        description="Rsync .mkv and .mp4 video files from local file(s) or directory(ies) to a remote server."
     )
     parser.add_argument(
         "source_dir",
         type=str,
-        help="Path to the local directory containing .mkv and .mp4 files (searches subdirectories recursively)"
+        help="Path to a local directory or .mkv/.mp4 file to sync"
     )
     parser.add_argument(
         "remote_server",
         type=str,
-        help="Remote server address (e.g., user@192.168.1.100 or user@debian-server.local)"
+        help="Remote server address (e.g., user@192.168.1.100 or user@host:/path/to/movies), or additional local file(s)"
     )
     parser.add_argument(
         "remote_dir",
         type=str,
-        nargs="?",
-        default=None,
+        nargs="*",
+        default=[],
         help="Destination directory on the remote server (e.g., /path/to/remote/movies). "
              "Can also be provided directly in remote_server as user@host:/path/to/remote/movies"
+    )
+    parser.add_argument(
+        "-s", "--select",
+        action="store_true",
+        help="Interactively select which .mkv/.mp4 files to sync from a numbered list"
     )
     parser.add_argument(
         "-p", "--port",
@@ -262,6 +330,38 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_positional_args(args) -> tuple[list[str], str, str]:
+    """
+    Separates one or more local source paths from the remote server and destination directory.
+    Supports both:
+      - <source(s)...> user@host:/remote/path
+      - <source(s)...> user@host /remote/path
+    """
+    all_pos = [args.source_dir, args.remote_server] + list(args.remote_dir)
+
+    last_arg = all_pos[-1]
+    if ":" in last_arg and not Path(last_arg).expanduser().exists():
+        local_sources = all_pos[:-1]
+        remote_host, remote_path = last_arg.split(":", 1)
+        if not remote_path:
+            print("Error: Remote directory path cannot be empty.")
+            sys.exit(1)
+        return local_sources, remote_host, remote_path
+
+    if len(all_pos) >= 3:
+        local_sources = all_pos[:-2]
+        remote_host = all_pos[-2].rstrip(":")
+        remote_path = all_pos[-1]
+        return local_sources, remote_host, remote_path
+
+    print(
+        "Error: Please specify the destination directory on the remote server.\n"
+        "Example: ./rsync_mkv_to_remote.py /local/movies user@debian-host /remote/movies\n"
+        "     or: ./rsync_mkv_to_remote.py /local/movie.mkv user@debian-host:/remote/movies"
+    )
+    sys.exit(1)
+
+
 def main():
     args = parse_args()
 
@@ -269,37 +369,38 @@ def main():
         print("Error: 'rsync' and 'ssh' must be installed. Run: sudo apt install rsync openssh-client")
         sys.exit(1)
 
-    source_dir = Path(args.source_dir).expanduser().resolve()
-    if not source_dir.is_dir():
-        print(f"Error: Local directory not found: {source_dir}")
-        sys.exit(1)
+    local_sources, remote_host, remote_path = resolve_positional_args(args)
 
-    # Support either `user@host /remote/path` or `user@host:/remote/path`
-    if args.remote_dir:
-        remote_host = args.remote_server.rstrip(":")
-        remote_path = args.remote_dir
-    elif ":" in args.remote_server:
-        remote_host, remote_path = args.remote_server.split(":", 1)
-        if not remote_path:
-            print("Error: Remote directory path cannot be empty.")
+    video_entries: list[tuple[Path, str]] = []
+    seen_paths: set[Path] = set()
+
+    for src in local_sources:
+        src_path = Path(src).expanduser().resolve()
+        if src_path.is_file():
+            if src_path.suffix.lower() not in VIDEO_EXTENSIONS:
+                print(f"Error: '{src_path}' is not a supported video file (.mkv or .mp4)")
+                sys.exit(1)
+            if src_path not in seen_paths:
+                seen_paths.add(src_path)
+                video_entries.append((src_path, src_path.name))
+        elif src_path.is_dir():
+            glob_func = src_path.rglob if args.recursive else src_path.glob
+            found = sorted([
+                f for f in glob_func("*")
+                if f.is_file()
+                and f.suffix.lower() in VIDEO_EXTENSIONS
+                and not f.name.endswith(".temp_stereo.mkv")
+            ])
+            for f in found:
+                if f not in seen_paths:
+                    seen_paths.add(f)
+                    video_entries.append((f, str(f.relative_to(src_path))))
+        else:
+            print(f"Error: Local file or directory not found: {src_path}")
             sys.exit(1)
-    else:
-        print(
-            "Error: Please specify the destination directory on the remote server.\n"
-            "Example: ./rsync_mkv_to_remote.py /local/movies user@debian-host /remote/movies"
-        )
-        sys.exit(1)
 
-    glob_func = source_dir.rglob if args.recursive else source_dir.glob
-    video_files = sorted([
-        f for f in glob_func("*")
-        if f.is_file()
-        and f.suffix.lower() in VIDEO_EXTENSIONS
-        and not f.name.endswith(".temp_stereo.mkv")
-    ])
-
-    if not video_files:
-        print(f"No .mkv or .mp4 video files found in '{source_dir}'")
+    if not video_entries:
+        print(f"No .mkv or .mp4 video files found in {', '.join(local_sources)}")
         sys.exit(0)
 
     # Reuse a single SSH connection across files so credentials are only requested once
@@ -318,13 +419,16 @@ def main():
         ssh_cmd.extend(["-i", str(identity_path)])
 
     destination = f"{remote_host}:{remote_path}"
-    total_size = sum(f.stat().st_size for f in video_files)
+    total_size = sum(f.stat().st_size for f, _ in video_entries)
 
-    print(
-        f"Found {len(video_files)} video file(s) (.mkv/.mp4, {format_size(total_size)}) "
-        f"in '{source_dir}' (including subdirectories)"
-    )
+    print(f"Found {len(video_entries)} video file(s) (.mkv/.mp4, {format_size(total_size)})")
     print(f"Destination: {destination}")
+
+    if args.select:
+        video_entries = prompt_file_selection(video_entries)
+        selected_size = sum(f.stat().st_size for f, _ in video_entries)
+        print(f"Selected {len(video_entries)} file(s) ({format_size(selected_size)}) to sync.")
+
     if args.dry_run:
         print("Mode: DRY RUN (no files will be modified)\n")
     else:
@@ -337,14 +441,13 @@ def main():
     total_bytes_synced = 0
     overall_start = time.monotonic()
 
-    for idx, video_file in enumerate(video_files, start=1):
-        rel_name = str(video_file.relative_to(source_dir))
+    for idx, (video_file, rel_name) in enumerate(video_entries, start=1):
         file_size = video_file.stat().st_size
-        print(f"[{idx}/{len(video_files)}] Syncing: {rel_name} ({format_size(file_size)})")
+        print(f"[{idx}/{len(video_entries)}] Syncing: {rel_name} ({format_size(file_size)})")
 
         try:
             status, speed_str, elapsed, transferred = sync_single_file(
-                source_dir=source_dir,
+                source_dir=video_file.parent,
                 video_file=video_file,
                 destination=destination,
                 ssh_cmd=ssh_cmd,
@@ -378,7 +481,7 @@ def main():
     overall_elapsed = time.monotonic() - overall_start
     print_summary_table(
         results=summary_rows,
-        total_files=len(video_files),
+        total_files=len(video_entries),
         synced_count=synced_count,
         skipped_count=skipped_count,
         failed_count=failed_count,
