@@ -1,0 +1,41 @@
+services:
+  plex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: plex-tailscale-debian:latest
+    container_name: plex-tailscale
+    hostname: ${TS_HOSTNAME:-plex-server}
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+      # Uncomment the line below to enable Intel/AMD GPU hardware transcoding on Debian:
+      # - /dev/dri:/dev/dri
+    environment:
+      - TZ=${TZ:-America/New_York}
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - PLEX_CLAIM=${PLEX_CLAIM:-}
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-plex-server}
+      - TS_EXTRA_ARGS=${TS_EXTRA_ARGS:-}
+      - TS_USERSPACE=${TS_USERSPACE:-false}
+      - TS_SERVE=${TS_SERVE:-false}
+      - ADVERTISE_TAILSCALE_IP=${ADVERTISE_TAILSCALE_IP:-true}
+    ports:
+      - "${PLEX_PORT:-32400}:32400/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+      - "1900:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    volumes:
+      - ${PLEX_CONFIG_DIR:-./config}:/config
+      - ${PLEX_TRANSCODE_DIR:-./transcode}:/transcode
+      - ${TAILSCALE_STATE_DIR:-./tailscale}:/var/lib/tailscale
+      - ${MEDIA_DIR:-./media}:/media

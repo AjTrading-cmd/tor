@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+docker/.env
+docker/config/
+docker/transcode/
+docker/tailscale/
+docker/media/
+

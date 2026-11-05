@@ -1,0 +1,7 @@
+config/
+transcode/
+tailscale/
+media/
+.env
+*.log
+README.md

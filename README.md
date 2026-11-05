@@ -51,7 +51,7 @@ Pass the folder containing your `.mkv` files:
 
 ## 2. Rsync Video Files to a Remote Server (`rsync_mkv_to_remote.py`)
 
-Use `rsync_mkv_to_remote.py` to sync all `.mkv` and `.mp4` video files (including those in subdirectories, while ignoring all non-video files) from a local directory on Linux Mint to a destination directory on a remote Debian server over SSH with a live progress bar and transfer summary table.
+Use `rsync_mkv_to_remote.py` to sync all `.mkv` and `.mp4` video files (including those inside subdirectories, copying only the video files directly into the remote folder without recreating their subdirectories or copying non-video files) from a local directory on Linux Mint to a destination directory on a remote Debian server over SSH with a live progress bar and transfer summary table.
 
 ### Prerequisites
 
@@ -90,4 +90,20 @@ You can also combine the remote server and path using standard `user@host:/path`
 - `-p`, `--port <PORT>`: Specify a custom SSH port (default: `22`).
 - `-i`, `--identity <KEY_FILE>`: Specify a custom SSH private key file (e.g., `~/.ssh/id_ed25519`).
 - `--remove-source-files`: Delete local `.mkv`/`.mp4` files after they have been successfully transferred to the remote server.
+
+---
+
+## 3. Inspect Video Files (`inspect_video_files.py`)
+
+Use `inspect_video_files.py` to scan all `.mkv` and `.mp4` files in a directory (including subdirectories) and pretty-print a table with each file's size, duration, resolution (e.g., `1920x1080 (1080p)`, `4K`), video codec/bit-depth/HDR/frame rate, overall bitrate, all audio tracks (language, codec, channel layout, audio bitrate), and subtitle tracks.
+
+### Usage
+
+```bash
+./inspect_video_files.py /path/to/movies
+```
+
+### Options
+
+- `--no-recursive`: Only inspect the top-level directory without searching subdirectories.
 
