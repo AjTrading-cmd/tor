@@ -37,9 +37,9 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && \
     curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list \
         -o /etc/apt/sources.list.d/tailscale.list && \
     # Add official Plex Media Server Debian repository
-    curl -fsSL https://downloads.plex.tv/plex-keys/PlexSign.key \
+    curl -fsSL https://downloads.plex.tv/plex-keys/PlexSign.v2.key \
         | gpg --dearmor -o /usr/share/keyrings/plex-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg] https://downloads.plex.tv/repo/deb public main" \
+    echo "deb [signed-by=/usr/share/keyrings/plex-archive-keyring.gpg] https://repo.plex.tv/deb/ public main" \
         > /etc/apt/sources.list.d/plexmediaserver.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -49,8 +49,10 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Create required runtime directories
-RUN mkdir -p \
+# Create plex user/group (skipped by plexmediaserver .deb in container builds) and runtime directories
+RUN (getent group plex >/dev/null || groupadd -g 1000 plex) && \
+    (id -u plex >/dev/null 2>&1 || useradd -u 1000 -g plex -d /config -s /usr/sbin/nologin plex) && \
+    mkdir -p \
     /config \
     /transcode \
     /media/movies \

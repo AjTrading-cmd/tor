@@ -94,9 +94,6 @@ done
 
 # Build tailscale up arguments
 TS_UP_ARGS=("--hostname=${TS_HOSTNAME:-plex-server}")
-if [ -n "${TS_AUTHKEY:-}" ]; then
-    TS_UP_ARGS+=("--authkey=${TS_AUTHKEY}")
-fi
 if [ -n "${TS_EXTRA_ARGS:-}" ]; then
     # shellcheck disable=SC2206
     EXTRA_ARR=(${TS_EXTRA_ARGS})
@@ -104,7 +101,11 @@ if [ -n "${TS_EXTRA_ARGS:-}" ]; then
 fi
 
 log "Bringing up Tailscale interface (hostname: ${TS_HOSTNAME:-plex-server})..."
-if [ -n "${TS_AUTHKEY:-}" ] || tailscale --socket="${TS_SOCKET}" status >/dev/null 2>&1; then
+if tailscale --socket="${TS_SOCKET}" status >/dev/null 2>&1; then
+    log "Tailscale node already authenticated via persisted state."
+    tailscale --socket="${TS_SOCKET}" up "${TS_UP_ARGS[@]}" || log "Warning: 'tailscale up' returned non-zero."
+elif [ -n "${TS_AUTHKEY:-}" ]; then
+    TS_UP_ARGS+=("--authkey=${TS_AUTHKEY}")
     tailscale --socket="${TS_SOCKET}" up "${TS_UP_ARGS[@]}" || log "Warning: 'tailscale up' returned non-zero. Run 'docker exec <container> tailscale up' to authenticate interactively if needed."
 else
     log "No TS_AUTHKEY provided and node is not yet authenticated."
