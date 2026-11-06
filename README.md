@@ -131,4 +131,34 @@ Once Tailscale and **HTTPS Certificates** (at [login.tailscale.com/admin/dns](ht
 
 See [`docker/README.md`](docker/README.md) for full setup, Apple TV configuration, quality/Direct Play settings, and troubleshooting.
 
+---
+
+## 5. Watch & Scan Incoming Media Files (`watch_and_scan_media.py`)
+
+Use `watch_and_scan_media.py` to automatically watch an incoming directory for new `.mkv` and `.mp4` files (or run periodically via cron), scan each file for malware using **ClamAV** (`clamdscan` or `clamscan`) and container integrity checks (`ffprobe`), move clean files into `safe_files` and flagged files into `skeptical_files`, and log full media metadata (file type, resolution, audio format, subtitle format, and safety notes) into a monthly Markdown file in `docs/YYYY-MM.md` (a new `.md` file is automatically started on the 1st of each month).
+
+### Prerequisites
+
+Install `ffmpeg`, `clamav`, and `inotify-tools`:
+```bash
+sudo apt install ffmpeg clamav clamav-daemon inotify-tools
+```
+
+### Usage
+
+#### Real-time File Watcher (Recommended)
+```bash
+./watch_and_scan_media.py /path/to/incoming \
+  --safe-dir /path/to/safe_files \
+  --skeptical-dir /path/to/skeptical_files \
+  --docs-dir /home/juju/ghe/tor/docs
+```
+
+#### One-Shot / Cronjob Mode (`--once`)
+To scan all files currently in `/path/to/incoming` and exit (e.g., from `crontab -e`):
+```cron
+*/5 * * * * /usr/bin/flock -n /tmp/media_scan.lock /home/juju/ghe/tor/watch_and_scan_media.py /path/to/incoming --once >> /var/log/media_scan.log 2>&1
+```
+
+
 
