@@ -49,6 +49,148 @@ WHITE = "\033[38;5;255m"
 GRAY = "\033[38;5;245m"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_PREV_CPU_TIMES: tuple[int, int] | None = None
+
+
+def read_cpu_stat() -> tuple[int, int]:
+    """Reads `/proc/stat` and returns `(idle_time, total_time)` across all CPU cores."""
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            first_line = f.readline()
+        parts = [int(x) for x in first_line.split()[1:]]
+        idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+        total = sum(parts)
+        return idle, total
+    except Exception:
+        return 0, 0
+
+
+def get_system_metrics() -> dict:
+    """
+    Collects live system hardware & OS metrics (`top`-style):
+    - Total CPU usage % (delta across `/proc/stat`)
+    - Load average (1m, 5m, 15m) & CPU core count
+    - RAM usage (used / total GiB & %) and Swap usage
+    - CPU Package & Core temperatures (`x86_pkg_temp` / `coretemp` / `hwmon`)
+    - Disk usage for the workspace filesystem
+    - System uptime
+    """
+    global _PREV_CPU_TIMES
+    idle1, total1 = read_cpu_stat()
+    if _PREV_CPU_TIMES is None:
+        time.sleep(0.08)
+        idle2, total2 = read_cpu_stat()
+    else:
+        idle2, total2 = idle1, total1
+        idle1, total1 = _PREV_CPU_TIMES
+    _PREV_CPU_TIMES = (idle2, total2)
+
+    delta_total = max(1, total2 - total1)
+    delta_idle = max(0, idle2 - idle1)
+    cpu_pct = max(0.0, min(100.0, (1.0 - (delta_idle / delta_total)) * 100.0))
+
+    try:
+        load1, load5, load15 = os.getloadavg()
+    except OSError:
+        load1 = load5 = load15 = 0.0
+    cpu_cores = os.cpu_count() or 1
+
+    # Memory & Swap from /proc/meminfo
+    mem_info: dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    val_parts = v.strip().split()
+                    if val_parts and val_parts[0].isdigit():
+                        mem_info[k.strip()] = int(val_parts[0]) * 1024  # kB -> bytes
+    except Exception:
+        pass
+
+    mem_total = mem_info.get("MemTotal", 0)
+    mem_avail = mem_info.get("MemAvailable", mem_info.get("MemFree", 0))
+    mem_used = max(0, mem_total - mem_avail)
+    mem_pct = (mem_used / mem_total * 100.0) if mem_total > 0 else 0.0
+
+    swap_total = mem_info.get("SwapTotal", 0)
+    swap_free = mem_info.get("SwapFree", 0)
+    swap_used = max(0, swap_total - swap_free)
+    swap_pct = (swap_used / swap_total * 100.0) if swap_total > 0 else 0.0
+
+    # CPU Temperature from /sys/class/thermal or /sys/class/hwmon
+    cpu_temp_c: float | None = None
+    try:
+        thermal_base = Path("/sys/class/thermal")
+        if thermal_base.exists():
+            preferred_zones = []
+            fallback_zones = []
+            for tz in thermal_base.glob("thermal_zone*"):
+                t_type = (tz / "type").read_text(encoding="utf-8").strip().lower()
+                t_val = int((tz / "temp").read_text(encoding="utf-8").strip()) / 1000.0
+                if t_val > 0:
+                    if any(k in t_type for k in ("x86_pkg", "pkg", "cpu", "core", "k10temp", "tctl")):
+                        preferred_zones.append(t_val)
+                    else:
+                        fallback_zones.append(t_val)
+            if preferred_zones:
+                cpu_temp_c = max(preferred_zones)
+            elif fallback_zones:
+                cpu_temp_c = max(fallback_zones)
+    except Exception:
+        pass
+
+    # Disk space on workspace partition
+    try:
+        du = shutil.disk_usage(REPO_ROOT)
+        disk_used_gb = du.used / (1024 ** 3)
+        disk_total_gb = du.total / (1024 ** 3)
+        disk_pct = (du.used / du.total * 100.0) if du.total > 0 else 0.0
+    except Exception:
+        disk_used_gb = disk_total_gb = disk_pct = 0.0
+
+    # Uptime from /proc/uptime
+    uptime_str = "-"
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as f:
+            up_secs = int(float(f.read().split()[0]))
+        days, rem = divmod(up_secs, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins, _ = divmod(rem, 60)
+        uptime_str = f"{days}d {hours:02d}h {mins:02d}m" if days > 0 else f"{hours:02d}h {mins:02d}m"
+    except Exception:
+        pass
+
+    return {
+        "cpu_pct": cpu_pct,
+        "cpu_cores": cpu_cores,
+        "load": (load1, load5, load15),
+        "mem_used_gb": mem_used / (1024 ** 3),
+        "mem_total_gb": mem_total / (1024 ** 3),
+        "mem_pct": mem_pct,
+        "swap_used_gb": swap_used / (1024 ** 3),
+        "swap_total_gb": swap_total / (1024 ** 3),
+        "swap_pct": swap_pct,
+        "temp_c": cpu_temp_c,
+        "disk_used_gb": disk_used_gb,
+        "disk_total_gb": disk_total_gb,
+        "disk_pct": disk_pct,
+        "uptime": uptime_str,
+    }
+
+
+def make_mini_gauge(pct: float, width: int = 12) -> str:
+    """Renders a compact color-coded bar gauge (Green -> Yellow -> Red) for CPU/RAM/Disk."""
+    pct = min(max(float(pct), 0.0), 100.0)
+    filled = int(round((pct / 100.0) * width))
+    bar = "█" * filled + "░" * (width - filled)
+    if pct >= 85.0:
+        color = RED
+    elif pct >= 65.0:
+        color = YELLOW
+    else:
+        color = GREEN
+    return f"{color}[{bar}]{RESET} {BOLD}{pct:5.1f}%{RESET}"
 
 
 def visible_len(text: str) -> int:
@@ -268,15 +410,32 @@ def render_dashboard(watch_mode: bool = False) -> str:
 
     output_blocks: list[str] = []
 
-    # 1. Top Banner
-    header_title = f"{BOLD}{CYAN}⚡ TOR MEDIA PIPELINE — LIVE STATUS DASHBOARD{RESET}"
-    clock_str = f"{GRAY}Updated: {WHITE}{now_str}{RESET}"
+    # 1. Top Banner + System Hardware Metrics (CPU, RAM, Temp, Load, Disk, Uptime)
+    sys_m = get_system_metrics()
+    header_title = f"{BOLD}{CYAN}⚡ TOR MEDIA PIPELINE DASHBOARD{RESET}"
+    clock_str = f"{GRAY}Up: {WHITE}{sys_m['uptime']}{GRAY} • {WHITE}{now_str}{RESET}"
     spacing = max(1, inner_w - visible_len(header_title) - visible_len(clock_str))
+
+    if sys_m["temp_c"] is not None:
+        t_val = sys_m["temp_c"]
+        t_color = RED if t_val >= 80.0 else (YELLOW if t_val >= 65.0 else GREEN)
+        temp_str = f"{t_color}{BOLD}{t_val:.1f}°C{RESET}"
+    else:
+        temp_str = f"{GRAY}N/A{RESET}"
+
+    l1, l5, l15 = sys_m["load"]
+    load_str = f"{WHITE}{l1:.2f}{GRAY}, {l5:.2f}, {l15:.2f} ({sys_m['cpu_cores']}c){RESET}"
+    ram_detail = f"{WHITE}{sys_m['mem_used_gb']:.1f}/{sys_m['mem_total_gb']:.1f}G{RESET}"
+    disk_detail = f"{WHITE}{sys_m['disk_used_gb']:.0f}/{sys_m['disk_total_gb']:.0f}G ({sys_m['disk_pct']:.0f}%){RESET}"
+    swap_detail = f"{WHITE}{sys_m['swap_used_gb']:.1f}/{sys_m['swap_total_gb']:.1f}G{RESET}"
+
     banner_lines = [
         f"{header_title}{' ' * spacing}{clock_str}",
-        f"{DIM}Malware Scan (`watch_and_scan_media.py`) • Season Splitter • Remote Rsync{RESET}",
+        f"{DIM}{'─' * inner_w}{RESET}",
+        f"{BOLD}CPU:{RESET} {make_mini_gauge(sys_m['cpu_pct'], 10)}  {BOLD}Temp:{RESET} {temp_str}  {BOLD}Load:{RESET} {load_str}",
+        f"{BOLD}RAM:{RESET} {make_mini_gauge(sys_m['mem_pct'], 10)} {ram_detail}  {BOLD}Swap:{RESET} {swap_detail}  {BOLD}Disk:{RESET} {disk_detail}",
     ]
-    output_blocks.append(draw_box("SYSTEM OVERVIEW", banner_lines, width, border_color=CYAN))
+    output_blocks.append(draw_box("SYSTEM & HARDWARE METRICS (top)", banner_lines, width, border_color=CYAN))
 
     # 2. Malware Scanner & Season Splitter Box
     malware_procs = procs["malware"]
