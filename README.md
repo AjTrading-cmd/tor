@@ -135,7 +135,11 @@ See [`docker/README.md`](docker/README.md) for full setup, Apple TV configuratio
 
 ## 5. Watch & Scan Incoming Media Files (`watch_and_scan_media.py`)
 
-Use `watch_and_scan_media.py` to automatically watch an incoming directory for new `.mkv` and `.mp4` files (or run periodically via cron), scan each file for malware using **ClamAV** (`clamdscan` or `clamscan`) and container integrity checks (`ffprobe`), move clean files into `safe_files` and flagged files into `skeptical_files`, and log full media metadata (file type, resolution, audio format, subtitle format, and safety notes) into a monthly Markdown file in `docs/YYYY-MM.md` (a new `.md` file is automatically started on the 1st of each month).
+Use `watch_and_scan_media.py` to automatically scan finished `.mkv` and `.mp4` downloads (directly via **qBittorrent's "Run external program on torrent finished"**, a real-time folder watcher, or a cronjob) using **ClamAV** (`clamdscan` or `clamscan`) and container integrity checks (`ffprobe`).
+
+- **Passes scan:** Moved into `safe_files/`
+- **Fails scan:** Moved into `skeptical_files/`
+- **Monthly Documentation (`docs/`):** Appends file type, resolution, audio format, subtitle format, and safety notes to `docs/YYYY-MM.md` (creating a new `.md` file on the 1st of every month), updates the landing page [`docs/index.md`](docs/index.md) for GitHub / GitHub Pages, and automatically commits & pushes the updated `docs/` folder to GitHub.
 
 ### Prerequisites
 
@@ -144,18 +148,33 @@ Install `ffmpeg`, `clamav`, and `inotify-tools`:
 sudo apt install ffmpeg clamav clamav-daemon inotify-tools
 ```
 
-### Usage
+### Usage with qBittorrent (Recommended)
 
-#### Real-time File Watcher (Recommended)
+1. Open **qBittorrent** $\rightarrow$ **Tools** $\rightarrow$ **Options...** (`Alt + O`) $\rightarrow$ **Downloads**.
+2. Scroll to the bottom and check **"Run external program on torrent finished"**.
+3. Enter the following command (using `%F`, which qBittorrent replaces with the finished torrent's file or folder path):
+   ```bash
+   /home/juju/ghe/tor/watch_and_scan_media.py "%F" --once --safe-dir "/path/to/safe_files" --skeptical-dir "/path/to/skeptical_files"
+   ```
+   *(If you omit `--safe-dir` and `--skeptical-dir`, they will automatically be created as `safe_files/` and `skeptical_files/` next to your download directory.)*
+
+### Enabling GitHub Pages for `/docs`
+1. On your GitHub repository page, go to **Settings** $\rightarrow$ **Pages**.
+2. Under **Build and deployment**:
+   - **Source:** `Deploy from a branch`
+   - **Branch:** `main` and folder `/docs`
+3. Click **Save**. GitHub Pages will render [`docs/index.md`](docs/index.md) and each monthly [`docs/YYYY-MM.md`](docs/2026-11.md) table automatically whenever a torrent finishes.
+
+### Other Modes
+
+#### Real-time Folder Watcher
 ```bash
 ./watch_and_scan_media.py /path/to/incoming \
   --safe-dir /path/to/safe_files \
-  --skeptical-dir /path/to/skeptical_files \
-  --docs-dir /home/juju/ghe/tor/docs
+  --skeptical-dir /path/to/skeptical_files
 ```
 
-#### One-Shot / Cronjob Mode (`--once`)
-To scan all files currently in `/path/to/incoming` and exit (e.g., from `crontab -e`):
+#### Cronjob Mode (`--once`)
 ```cron
 */5 * * * * /usr/bin/flock -n /tmp/media_scan.lock /home/juju/ghe/tor/watch_and_scan_media.py /path/to/incoming --once >> /var/log/media_scan.log 2>&1
 ```
