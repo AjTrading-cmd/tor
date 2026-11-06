@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.env
 docker/.env
 docker/config/
 docker/transcode/
