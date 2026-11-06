@@ -7,6 +7,9 @@ services:
     container_name: plex-tailscale
     hostname: ${TS_HOSTNAME:-plex-server}
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     cap_add:
       - NET_ADMIN
       - SYS_MODULE

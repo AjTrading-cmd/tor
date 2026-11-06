@@ -19,16 +19,25 @@ Workflow for each .mkv / .mp4 file:
 """
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
+import fcntl
 import json
+import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
+from split_season_video import detect_full_season_info, split_season_file
+
 REPO_ROOT = Path(__file__).resolve().parent
+SCAN_LOCK_FILE = Path("/tmp/tor_malware_scan_queue.lock")
+SCAN_STATUS_FILE = Path("/tmp/tor_malware_scan_status.json")
 VIDEO_EXTENSIONS = {".mkv", ".mp4"}
 IGNORE_SUFFIXES = (
     ".!qb",
@@ -574,6 +583,54 @@ def git_commit_and_push_docs(docs_dir: Path, processed_names: list[str]):
         print(f"  -> Warning: Failed to git commit/push docs: {exc}")
 
 
+def update_scan_status(**kwargs):
+    """Writes live telemetry to `/tmp/tor_malware_scan_status.json` for the status UI."""
+    try:
+        current = {}
+        if SCAN_STATUS_FILE.exists():
+            try:
+                current = json.loads(SCAN_STATUS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                current = {}
+        current.update(kwargs)
+        current["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current["pid"] = os.getpid()
+        tmp_path = SCAN_STATUS_FILE.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        tmp_path.replace(SCAN_STATUS_FILE)
+    except Exception:
+        pass
+
+
+@contextmanager
+def acquire_malware_scan_lock():
+    """
+    Ensures only ONE malware scan / season-split / docs-commit operation runs at a time,
+    even if qBittorrent spawns multiple `watch_and_scan_media.py` processes simultaneously.
+    Subsequent invocations wait in an OS-level FIFO lock queue until the active scan finishes.
+    """
+    lock_fd = open(SCAN_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"[Queue] Another malware scan is currently running (PID {os.getpid()} waiting in queue)..."
+            )
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"[Queue] Lock acquired by PID {os.getpid()}; starting scan."
+            )
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fd.close()
+
+
 def is_eligible_video_file(file_path: Path) -> bool:
     """Checks if a path is a regular .mkv or .mp4 file and not a temporary/partial file."""
     if not file_path.is_file():
@@ -602,12 +659,32 @@ def process_file(
         return None
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing: {file_path}")
+    update_scan_status(
+        state="WAITING_STABLE",
+        current_file=file_path.name,
+        file_size=format_size(file_path.stat().st_size) if file_path.exists() else "-",
+        stage="Waiting for file write to stabilize",
+    )
     if stability_wait > 0:
         if not wait_until_file_stable(file_path, stability_seconds=stability_wait):
             print(f"  -> Skipped {file_path.name} (file disappeared or unstable)")
+            update_scan_status(state="IDLE", current_file="", stage="Idle")
             return None
 
+    update_scan_status(
+        state="INSPECTING",
+        current_file=file_path.name,
+        file_size=format_size(file_path.stat().st_size),
+        stage="Inspecting streams & container with ffprobe",
+    )
     media_info = inspect_media_file(file_path)
+
+    update_scan_status(
+        state="SCANNING_MALWARE",
+        current_file=file_path.name,
+        file_size=media_info["size"],
+        stage="Running ClamAV malware scan",
+    )
     scan_passed, scan_note = run_malware_scan(file_path, custom_scan_cmd=custom_scan_cmd)
 
     notes = [scan_note]
@@ -624,6 +701,54 @@ def process_file(
     safety_notes_str = "; ".join(notes)
 
     if is_safe:
+        # Check if this clean file is a combined full-season video file
+        season_info = detect_full_season_info(file_path)
+        if season_info is not None:
+            update_scan_status(
+                state="SPLITTING_SEASON",
+                current_file=file_path.name,
+                stage=f"Splitting season into {season_info['episode_count']} episodes",
+            )
+            try:
+                created_episodes = split_season_file(
+                    file_path=file_path,
+                    output_dir=safe_dir,
+                    remove_original=True,
+                )
+            except Exception as exc:
+                created_episodes = []
+                print(f"  [!] Season split failed ({exc}); moving unsplit file to safe_files/")
+
+            if created_episodes:
+                now = datetime.now()
+                split_note = (
+                    f"{safety_notes_str}; Split from full-season file `{file_path.name}` "
+                    f"({len(created_episodes)} episodes)"
+                )
+                for ep_path in created_episodes:
+                    ep_info = inspect_media_file(ep_path)
+                    md_path = log_to_monthly_markdown(
+                        docs_dir=docs_dir,
+                        now=now,
+                        file_name=ep_path.name,
+                        status_label="SAFE",
+                        dest_folder_name=safe_dir.name,
+                        media_info=ep_info,
+                        safety_notes=split_note,
+                    )
+                print(
+                    f"  -> Status: SAFE (Split into {len(created_episodes)} episodes in {safe_dir})"
+                )
+                update_scan_status(
+                    state="IDLE",
+                    current_file="",
+                    stage="Idle",
+                    last_file=f"{file_path.name} ({len(created_episodes)} eps)",
+                    last_result="SAFE (Season Split)",
+                    last_finished_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                return f"{file_path.name} ({len(created_episodes)} episodes)"
+
         dest_dir = safe_dir
         status_label = "SAFE"
     else:
@@ -645,6 +770,14 @@ def process_file(
 
     print(
         f"  -> Status: {status_label} | Moved to: {final_path} | Logged to: {md_path}"
+    )
+    update_scan_status(
+        state="IDLE",
+        current_file="",
+        stage="Idle",
+        last_file=final_path.name,
+        last_result=status_label,
+        last_finished_at=now.strftime("%Y-%m-%d %H:%M:%S"),
     )
     return final_path.name
 
@@ -713,6 +846,8 @@ def watch_directory(
 ):
     """
     Watches `watch_dir` in real time using `inotifywait` (if available) or polling.
+    Uses an internal FIFO worker queue AND the cross-process file lock so files are
+    always scanned strictly one at a time without blocking event detection.
     """
     print(f"Watching directory:  {watch_dir}")
     print(f"Safe files dir:      {safe_dir}")
@@ -720,20 +855,66 @@ def watch_directory(
     print(f"Monthly docs dir:    {docs_dir}")
     print("Press Ctrl+C to stop.\n")
 
-    initial = scan_target_path(
-        watch_dir,
-        safe_dir=safe_dir,
-        skeptical_dir=skeptical_dir,
-        docs_dir=docs_dir,
-        custom_scan_cmd=custom_scan_cmd,
-        stability_wait=stability_wait,
-    )
-    if initial and git_push:
-        git_commit_and_push_docs(docs_dir, initial)
+    file_queue: queue.Queue[Path] = queue.Queue()
+    queued_or_active: set[Path] = set()
+    state_lock = threading.Lock()
+    stop_event = threading.Event()
+    excluded_dirs = {safe_dir.resolve(), skeptical_dir.resolve(), docs_dir.resolve()}
+
+    def enqueue_candidate(candidate: Path):
+        resolved = candidate.resolve()
+        if any(ex in resolved.parents or resolved == ex for ex in excluded_dirs):
+            return
+        if not is_eligible_video_file(resolved):
+            return
+        with state_lock:
+            if resolved in queued_or_active:
+                return
+            queued_or_active.add(resolved)
+            q_size = file_queue.qsize() + 1
+        if q_size > 1:
+            print(f"  [Queue] Enqueued {resolved.name} (position #{q_size} in malware scan queue)")
+        file_queue.put(resolved)
+        update_scan_status(queued_count=file_queue.qsize(), watch_dir=str(watch_dir))
+
+    def worker_loop():
+        while not stop_event.is_set():
+            try:
+                candidate = file_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            update_scan_status(queued_count=file_queue.qsize())
+            try:
+                if is_eligible_video_file(candidate):
+                    with acquire_malware_scan_lock():
+                        name = process_file(
+                            candidate,
+                            safe_dir=safe_dir,
+                            skeptical_dir=skeptical_dir,
+                            docs_dir=docs_dir,
+                            custom_scan_cmd=custom_scan_cmd,
+                            stability_wait=stability_wait,
+                        )
+                        if name and git_push:
+                            git_commit_and_push_docs(docs_dir, [name])
+            finally:
+                with state_lock:
+                    queued_or_active.discard(candidate)
+                file_queue.task_done()
+                update_scan_status(queued_count=file_queue.qsize())
+
+    worker = threading.Thread(target=worker_loop, daemon=True)
+    worker.start()
+
+    def sweep_directory():
+        for item in sorted(watch_dir.rglob("*")):
+            enqueue_candidate(item)
+
+    sweep_directory()
 
     has_inotifywait = shutil.which("inotifywait") is not None
     if has_inotifywait:
-        print("Using inotifywait for real-time file event detection...")
+        print("Using inotifywait + FIFO queue for real-time file event detection...")
         cmd = [
             "inotifywait",
             "-m",
@@ -747,39 +928,22 @@ def watch_directory(
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
-                candidate = Path(line.strip())
-                if is_eligible_video_file(candidate):
-                    name = process_file(
-                        candidate,
-                        safe_dir=safe_dir,
-                        skeptical_dir=skeptical_dir,
-                        docs_dir=docs_dir,
-                        custom_scan_cmd=custom_scan_cmd,
-                        stability_wait=stability_wait,
-                    )
-                    if name and git_push:
-                        git_commit_and_push_docs(docs_dir, [name])
+                enqueue_candidate(Path(line.strip()))
         except KeyboardInterrupt:
             print("\nStopping watcher...")
         finally:
+            stop_event.set()
             proc.terminate()
     else:
         print(f"Polling directory every {poll_interval}s (install 'inotify-tools' for inotify events)...")
         try:
             while True:
-                names = scan_target_path(
-                    watch_dir,
-                    safe_dir=safe_dir,
-                    skeptical_dir=skeptical_dir,
-                    docs_dir=docs_dir,
-                    custom_scan_cmd=custom_scan_cmd,
-                    stability_wait=stability_wait,
-                )
-                if names and git_push:
-                    git_commit_and_push_docs(docs_dir, names)
+                sweep_directory()
                 time.sleep(poll_interval)
         except KeyboardInterrupt:
             print("\nStopping watcher...")
+        finally:
+            stop_event.set()
 
 
 def main():
@@ -867,17 +1031,18 @@ def main():
     run_once = args.once or target_path.is_file()
 
     if run_once:
-        processed = scan_target_path(
-            target_path,
-            safe_dir=safe_dir,
-            skeptical_dir=skeptical_dir,
-            docs_dir=docs_dir,
-            custom_scan_cmd=args.scanner_cmd,
-            stability_wait=args.stability_wait,
-        )
-        if processed and not args.no_git_push:
-            git_commit_and_push_docs(docs_dir, processed)
-        print(f"Processed {len(processed)} file(s).")
+        with acquire_malware_scan_lock():
+            processed = scan_target_path(
+                target_path,
+                safe_dir=safe_dir,
+                skeptical_dir=skeptical_dir,
+                docs_dir=docs_dir,
+                custom_scan_cmd=args.scanner_cmd,
+                stability_wait=args.stability_wait,
+            )
+            if processed and not args.no_git_push:
+                git_commit_and_push_docs(docs_dir, processed)
+            print(f"Processed {len(processed)} file(s).")
         sys.exit(0)
 
     target_path.mkdir(parents=True, exist_ok=True)

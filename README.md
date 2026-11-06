@@ -51,12 +51,12 @@ Pass the folder containing your `.mkv` files:
 
 ## 2. Rsync Video Files to a Remote Server (`rsync_mkv_to_remote.py`)
 
-Use `rsync_mkv_to_remote.py` to sync all `.mkv` and `.mp4` video files (including those inside subdirectories, copying only the video files directly into the remote folder without recreating their subdirectories or copying non-video files) from a local directory on Linux Mint to a destination directory on a remote Debian server over SSH with a live progress bar and transfer summary table.
+Use `rsync_mkv_to_remote.py` to sync `.mkv` and `.mp4` video files from a local directory (such as `safe_files/`) to a remote Debian server over SSH with a live progress bar, transfer summary table, **watchdog mode (`--watch`)**, and **automatic Movie vs. TV Show detection and routing**.
 
 ### Prerequisites
 
-Make sure `rsync` and SSH are installed on both machines:
-- **Linux Mint (client):** `sudo apt install rsync openssh-client`
+Make sure `rsync`, `ssh`, and `inotify-tools` (for watchdog mode) are installed:
+- **Linux Mint (client):** `sudo apt install rsync openssh-client inotify-tools`
 - **Debian (remote server):** `sudo apt install rsync openssh-server`
 
 Ensure the script is executable (if running directly):
@@ -64,9 +64,24 @@ Ensure the script is executable (if running directly):
 chmod +x rsync_mkv_to_remote.py
 ```
 
-### Usage
+### Watchdog Mode on `safe_files` (Recommended)
 
-Pass the local folder, the remote server (`user@host`), and the remote destination folder:
+Run `rsync_mkv_to_remote.py` with `--watch` (`-w`) pointed at your `safe_files` directory. Whenever `watch_and_scan_media.py` moves a clean `.mkv` or `.mp4` into `safe_files`, the watchdog automatically:
+1. Detects whether the file is a **Movie** or **TV Show** (via `S01E02`, `1x02`, `Season 1`, `Episode 1`, dated show patterns, and `ffprobe` container metadata).
+2. Transfers **Movies** to your remote Movies directory and **TV Shows** to your remote TV Shows directory (creating the remote directories automatically if needed).
+3. Deletes the local file from `safe_files` once the transfer completes (pass `--keep-source-files` if you want to keep local copies).
+
+```bash
+# Automatically splits into /path/to/remote/media/movies and /path/to/remote/media/tv_shows
+./rsync_mkv_to_remote.py /path/to/safe_files user@debian-server:/path/to/remote/media --watch
+
+# Or specify explicit remote Movie and TV Show directories:
+./rsync_mkv_to_remote.py /path/to/safe_files user@debian-server:/path/to/remote/movies --tv-dir /path/to/remote/tv_shows --watch
+```
+
+### One-Shot Usage
+
+Pass the local folder (or file), the remote server (`user@host`), and the remote destination folder:
 
 ```bash
 ./rsync_mkv_to_remote.py /path/to/local/movies user@debian-server /path/to/remote/movies
@@ -78,14 +93,14 @@ You can also combine the remote server and path using standard `user@host:/path`
 ./rsync_mkv_to_remote.py /path/to/local/movies user@192.168.1.100:/path/to/remote/movies
 ```
 
-*(You can also run it via Python directly: `python3 rsync_mkv_to_remote.py /path/to/local/movies user@debian-server /path/to/remote/movies`)*
-
 ### Options
 
-- `-n`, `--dry-run`: Preview which `.mkv` and `.mp4` files will be transferred without making any changes.
-  ```bash
-  ./rsync_mkv_to_remote.py /path/to/local/movies user@debian-server /path/to/remote/movies --dry-run
-  ```
+- `-w`, `--watch`: Watch `source_dir` (e.g., `safe_files/`) continuously and sync new `.mkv`/`.mp4` files as soon as they appear (removes local file after transfer by default).
+- `--tv-dir <REMOTE_PATH>`: Remote directory for TV Shows when syncing mixed Movie/TV folders.
+- `--same-remote-dir`: Send both Movies and TV Shows to the exact same remote folder even in `--watch` mode.
+- `--keep-source-files`: Keep local files in `safe_files` after syncing in `--watch` mode.
+- `-s`, `--select`: Interactively select which `.mkv`/`.mp4` files to sync from a numbered list (shows `[Movie]` or `[TV Show]` tags).
+- `-n`, `--dry-run`: Preview which `.mkv` and `.mp4` files will be transferred and where they will be routed without making any changes.
 - `--no-recursive`: Only search the top-level directory (subdirectory recursion is enabled by default).
 - `-p`, `--port <PORT>`: Specify a custom SSH port (default: `22`).
 - `-i`, `--identity <KEY_FILE>`: Specify a custom SSH private key file (e.g., `~/.ssh/id_ed25519`).
@@ -137,7 +152,7 @@ See [`docker/README.md`](docker/README.md) for full setup, Apple TV configuratio
 
 Use `watch_and_scan_media.py` to automatically scan finished `.mkv` and `.mp4` downloads (directly via **qBittorrent's "Run external program on torrent finished"**, a real-time folder watcher, or a cronjob) using **ClamAV** (`clamdscan` or `clamscan`) and container integrity checks (`ffprobe`).
 
-- **Passes scan:** Moved into `safe_files/`
+- **Passes scan:** Moved into `safe_files/` (or, if the file is a **combined full-season video**, automatically split into individual episode files like `Show.S01E01.mkv`, `Show.S01E02.mkv` inside `safe_files/` via [`split_season_video.py`](split_season_video.py) and the combined file is removed).
 - **Fails scan:** Moved into `skeptical_files/`
 - **Monthly Documentation (`docs/`):** Appends file type, resolution, audio format, subtitle format, and safety notes to `docs/YYYY-MM.md` (creating a new `.md` file on the 1st of every month), updates the landing page [`docs/index.md`](docs/index.md) for GitHub / GitHub Pages, and automatically commits & pushes the updated `docs/` folder to GitHub.
 
@@ -178,6 +193,47 @@ sudo apt install ffmpeg clamav clamav-daemon inotify-tools
 ```cron
 */5 * * * * /usr/bin/flock -n /tmp/media_scan.lock /home/juju/ghe/tor/watch_and_scan_media.py /path/to/incoming --once >> /var/log/media_scan.log 2>&1
 ```
+
+---
+
+## 6. Split Full-Season Video Files into Episodes (`split_season_video.py`)
+
+Use `split_season_video.py` to detect and losslessly split combined full-season `.mkv` and `.mp4` files (e.g., `Show.Name.S01E01-E10.1080p.mkv` or `Show.Name.Season.1.Complete.mkv`) into individual episode files (`Show.Name.S01E01.1080p.mkv`, `Show.Name.S01E02.1080p.mkv`, etc.) without re-encoding (`ffmpeg -c copy`).
+
+*(Note: `watch_and_scan_media.py` automatically invokes this whenever a clean full-season video file passes the malware scan, outputting the split episodes directly into `safe_files/`.)*
+
+### How Episode Boundaries Are Determined
+1. **Embedded Chapters (`ffprobe -show_chapters`):** Uses exact chapter timestamps if the file has episode-level chapters, or snaps to the nearest chapter boundary when episodes have multiple internal chapters.
+2. **Black-Frame & Silence Detection (`ffmpeg blackdetect` / `silencedetect`):** Scans a transition window around each expected episode break to find the exact black screen or audio silence between episodes.
+3. **Equal-Duration Fallback:** Splits evenly across the episode count if no chapters or black frames are present.
+
+### Standalone Usage
+
+```bash
+# Auto-detect and split a combined season file (or all combined season files in a folder)
+./split_season_video.py /path/to/Show.Name.S01E01-E08.mkv --output-dir /path/to/safe_files
+
+# Explicitly specify episode count and season number, or preview with --dry-run
+./split_season_video.py /path/to/Show.Season.1.mkv --episodes 10 --season 1 --dry-run
+```
+
+---
+
+## 7. Live Pipeline Status Dashboard (`pipeline_status_ui.py`)
+
+Use `pipeline_status_ui.py` to launch a live, colorized ASCII/Unicode terminal dashboard showing the current status, mutex locks, queue depth, active files, transfer progress bars, and recent `/docs` log entries for `watch_and_scan_media.py`, `split_season_video.py`, and `rsync_mkv_to_remote.py`.
+
+### Usage
+
+```bash
+# Live auto-refreshing dashboard (updates every 1s)
+./pipeline_status_ui.py
+
+# Print a single status snapshot and exit
+./pipeline_status_ui.py --once
+```
+
+
 
 
 

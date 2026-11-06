@@ -1,0 +1,39 @@
+services:
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      - PUID=1000
+      - PGID=985
+      - TZ=America/Indiana/Indianapolis
+      - AUTO_UPDATE=true
+    ports:
+      - "9117:9117"
+    volumes:
+      - /home/juju/.config/Jackett:/config
+    networks:
+      - media-net
+      - default
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      - LOG_LEVEL=info
+    ports:
+      - "8191:8191"
+    networks:
+      - media-net
+      - default
+
+networks:
+  media-net:
+    external: true
