@@ -1,0 +1,105 @@
+# ==============================================================================
+# NordVPN (Gluetun WireGuard/OpenVPN) + qBittorrent + Jackett + FlareSolverr
+# ==============================================================================
+# All 3 services (qbittorrent, jackett, flaresolverr) share Gluetun's network
+# stack (`network_mode: "service:vpn"`).
+#
+# Benefits:
+# 1. Your host PC stays OFF the VPN (SSH, rsync to 192.168.52.18, LAN, and Docker
+#    never get blocked by NordVPN's host firewall).
+# 2. 100% leak-proof kill switch: qBittorrent & Jackett only have the VPN tunnel
+#    interface — if the VPN drops, zero traffic can leak over your ISP IP.
+# 3. Inside the shared container network, qBittorrent, Jackett, and FlareSolverr
+#    communicate over 127.0.0.1 (localhost:8080, localhost:9117, localhost:8191)
+#    with built-in encrypted DNS over TLS (1.1.1.1 / 8.8.8.8).
+# ==============================================================================
+
+services:
+  vpn:
+    image: qmcgaw/gluetun:latest
+    container_name: vpn
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      # qBittorrent Web UI (http://localhost:8080)
+      - "${QBIT_WEBUI_PORT:-8080}:8080/tcp"
+      # qBittorrent BitTorrent listening port
+      - "${QBIT_TORRENT_PORT:-45906}:45906/tcp"
+      - "${QBIT_TORRENT_PORT:-45906}:45906/udp"
+      # Jackett Web UI (http://localhost:9117)
+      - "${JACKETT_PORT:-9117}:9117/tcp"
+      # FlareSolverr API (http://localhost:8191)
+      - "${FLARESOLVERR_PORT:-8191}:8191/tcp"
+    environment:
+      - TZ=${TZ:-America/Indiana/Indianapolis}
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+      # For WireGuard (NordLynx): set WIREGUARD_PRIVATE_KEY in .env.vpn
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
+      # For OpenVPN fallback: set OPENVPN_USER and OPENVPN_PASSWORD in .env.vpn
+      - OPENVPN_USER=${OPENVPN_USER:-}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-}
+      - SERVER_COUNTRIES=${SERVER_COUNTRIES:-United States}
+      - SERVER_CATEGORIES=${SERVER_CATEGORIES:-P2P}
+      # Built-in DNS over TLS (prevents ISP/router DNS blocks)
+      - DOT=on
+      - DOT_PROVIDERS=cloudflare,google
+      - BLOCK_MALICIOUS=off
+      # Allow access from your host PC & local LAN (192.168.52.0/24)
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.52.0/24,172.17.0.0/16,172.18.0.0/16
+    volumes:
+      - ./gluetun:/gluetun
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-America/Indiana/Indianapolis}
+      - WEBUI_PORT=${QBIT_WEBUI_PORT:-8080}
+      - TORRENTING_PORT=${QBIT_TORRENT_PORT:-45906}
+    volumes:
+      # Persist qBittorrent config & torrents in a dedicated directory or existing config
+      - ${QBIT_CONFIG_DIR:-/home/juju/.config/qBittorrent-docker}:/config
+      # Mount your torrents folder at the exact same path so paths match host scripts
+      - ${TORRENTS_DIR:-/home/juju/torrents}:/home/juju/torrents
+      # Mount the repo so qBittorrent can also invoke scripts if needed
+      - /home/juju/ghe/tor:/home/juju/ghe/tor
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    restart: unless-stopped
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-985}
+      - TZ=${TZ:-America/Indiana/Indianapolis}
+      - AUTO_UPDATE=true
+    volumes:
+      - /home/juju/.config/Jackett:/config
+      - ${TORRENTS_DIR:-/home/juju/torrents}:/home/juju/torrents
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    network_mode: "service:vpn"
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ:-America/Indiana/Indianapolis}

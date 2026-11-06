@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .env
 docker/.env
+docker/.env.vpn
+docker/gluetun/
 docker/config/
 docker/transcode/
 docker/tailscale/

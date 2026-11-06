@@ -233,6 +233,38 @@ Use `pipeline_status_ui.py` to launch a live, colorized ASCII/Unicode terminal d
 ./pipeline_status_ui.py --once
 ```
 
+---
+
+## 8. NordVPN (Gluetun) + qBittorrent + Jackett + FlareSolverr Docker Stack (`docker/docker-compose.vpn-media.yml`)
+
+Use [`docker/docker-compose.vpn-media.yml`](docker/docker-compose.vpn-media.yml) to run **NordVPN (`gluetun`)**, **qBittorrent**, **Jackett**, and **FlareSolverr** together inside a single isolated VPN network stack (`network_mode: "service:vpn"`):
+
+- **Host PC stays off the VPN:** Your Linux Mint host keeps full-speed local LAN access (`rsync` to `192.168.52.18`, SSH, GitHub, etc. are never blocked by NordVPN's host firewall).
+- **100% Leak-Proof Kill Switch:** `qbittorrent`, `jackett`, and `flaresolverr` share the `vpn` container's network interface and cannot leak traffic if the VPN drops.
+- **Zero DNS / Firewall Issues:** Inside the shared network stack, qBittorrent reaches Jackett at `http://127.0.0.1:9117` and Jackett reaches FlareSolverr at `http://127.0.0.1:8191`, while your host accesses the Web UIs at `http://localhost:8080` (qBittorrent) and `http://localhost:9117` (Jackett).
+
+### Quick Start
+
+```bash
+cd /home/juju/ghe/tor/docker
+cp .env.vpn.example .env.vpn
+
+# 1. Extract your NordLynx WireGuard private key while connected to NordVPN on host:
+sudo wg show nordlynx private-key
+# Paste that key into WIREGUARD_PRIVATE_KEY= in .env.vpn
+
+# 2. Disconnect host NordVPN (since the Docker container will now handle the VPN):
+nordvpn disconnect
+
+# 3. Stop old standalone jackett/flaresolverr containers and launch the unified VPN stack:
+docker rm -f jackett flaresolverr 2>/dev/null || true
+docker compose -f docker-compose.vpn-media.yml --env-file .env.vpn up -d
+```
+
+### Important: Update FlareSolverr URL in Jackett
+Because `jackett` and `flaresolverr` now share the same `vpn` network stack (`localhost`), in the Jackett Web UI (`http://localhost:9117`) set **FlareSolverr API URL** to `http://127.0.0.1:8191` (or `http://localhost:8191`).
+
+
 
 
 
