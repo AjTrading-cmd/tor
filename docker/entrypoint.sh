@@ -170,7 +170,7 @@ fi
 ONLINE_TOKEN="$(get_pref "PlexOnlineToken")"
 if [ -n "${PLEX_CLAIM:-}" ] && [ -z "${ONLINE_TOKEN}" ]; then
     log "Attempting to claim Plex Media Server using PLEX_CLAIM token..."
-    CLAIM_RESPONSE="$(curl -fsSL -X POST \
+    CLAIM_RESPONSE="$(env -u LD_LIBRARY_PATH curl -fsSL -X POST \
         -H "X-Plex-Client-Identifier: ${PROCESSED_ID}" \
         -H "X-Plex-Product: Plex Media Server" \
         -H "X-Plex-Version: 1.1" \
@@ -194,18 +194,87 @@ if [ -n "${PLEX_CLAIM:-}" ] && [ -z "${ONLINE_TOKEN}" ]; then
     fi
 fi
 
-# Register Tailscale IP in Plex customConnections so Plex apps can always reach the server over Tailscale
-if [ -n "${TS_IP}" ] && [ "${ADVERTISE_TAILSCALE_IP:-true}" = "true" ]; then
-    TS_URL="http://${TS_IP}:32400"
+# Register Tailscale MagicDNS hostname & HTTPS certificate in Plex Preferences.xml
+TS_DNS_NAME="$(tailscale --socket="${TS_SOCKET}" status --self --json 2>/dev/null | grep -m1 '"DNSName"' | sed -E 's/.*"DNSName": *"([^"]+)\.?".*/\1/' | sed 's/\.$//' || true)"
+TS_CERT_READY="false"
+
+if [ -n "${TS_DNS_NAME}" ] && [ "${ADVERTISE_TAILSCALE_IP:-true}" = "true" ]; then
+    TS_CRT="/config/tailscale.crt"
+    TS_KEY="/config/tailscale.key"
+    TS_P12="/config/tailscale.p12"
+    TS_P12_PASS="plextailscale"
+
+    if tailscale --socket="${TS_SOCKET}" status --json 2>/dev/null | grep -q '"CertDomains": *\['; then
+        log "Provisioning Tailscale HTTPS certificate for ${TS_DNS_NAME}..."
+        if tailscale --socket="${TS_SOCKET}" cert --cert-file="${TS_CRT}" --key-file="${TS_KEY}" "${TS_DNS_NAME}" >/dev/null 2>&1; then
+            if env -u LD_LIBRARY_PATH openssl pkcs12 -export \
+                -out "${TS_P12}" \
+                -inkey "${TS_KEY}" \
+                -in "${TS_CRT}" \
+                -name "${TS_DNS_NAME}" \
+                -passout "pass:${TS_P12_PASS}" >/dev/null 2>&1; then
+                chown plex:plex "${TS_P12}" "${TS_CRT}" "${TS_KEY}"
+                chmod 600 "${TS_P12}" "${TS_KEY}"
+                set_pref "customCertificatePath" "${TS_P12}"
+                set_pref "customCertificateKey" "${TS_P12_PASS}"
+                set_pref "customCertificateDomain" "${TS_DNS_NAME}"
+                TS_CERT_READY="true"
+                log "Tailscale HTTPS certificate configured for Plex: https://${TS_DNS_NAME}:32400"
+            else
+                log "Warning: Failed to convert Tailscale certificate to PKCS#12 format."
+            fi
+        else
+            log "Warning: 'tailscale cert' failed for ${TS_DNS_NAME}."
+        fi
+    else
+        log "Note: Tailscale HTTPS Certificates are not yet enabled on your tailnet."
+        log "Enable 'HTTPS Certificates' at https://login.tailscale.com/admin/dns — container will auto-detect and configure HTTPS."
+    fi
+
+    if [ "${TS_CERT_READY}" = "true" ]; then
+        TS_URL="https://${TS_DNS_NAME}:32400,http://${TS_DNS_NAME}:32400"
+    else
+        TS_URL="http://${TS_DNS_NAME}:32400"
+    fi
+
     EXISTING_CUSTOM="$(get_pref "customConnections")"
-    if [ -z "${EXISTING_CUSTOM}" ]; then
+    # Strip any previously added 100.x.x.x CGNAT URLs or stale TS_DNS_NAME entries before prepending TS_URL
+    CLEANED_CUSTOM="$(printf '%s' "${EXISTING_CUSTOM}" | sed -E "s#https?://(100\.[0-9]+\.[0-9]+\.[0-9]+|${TS_DNS_NAME}):[0-9]+,?# #g; s/^[, ]+//; s/[, ]+$//; s/ +/,/g")"
+    if [ -z "${CLEANED_CUSTOM}" ]; then
         set_pref "customConnections" "${TS_URL}"
-    elif [[ "${EXISTING_CUSTOM}" != *"${TS_IP}"* ]]; then
-        set_pref "customConnections" "${EXISTING_CUSTOM},${TS_URL}"
+    else
+        set_pref "customConnections" "${TS_URL},${CLEANED_CUSTOM}"
     fi
 fi
 
+# Ensure secureConnections defaults to Preferred (1) so both HTTPS and HTTP fallback work
+EXISTING_SECURE="$(get_pref "secureConnections")"
+if [ -z "${EXISTING_SECURE}" ]; then
+    set_pref "secureConnections" "1"
+fi
+
+# Treat Tailscale CGNAT (100.64.0.0/10) and standard RFC1918 ranges as LAN in Plex
+EXISTING_LAN="$(get_pref "LanNetworksBandwidth")"
+if [ -z "${EXISTING_LAN}" ]; then
+    set_pref "LanNetworksBandwidth" "100.64.0.0/10,192.168.0.0/16,172.16.0.0/12,10.0.0.0/8"
+fi
+
 chown plex:plex "${PREFS_FILE}"
+
+# If Tailscale HTTPS wasn't enabled at boot, watch in background and auto-restart once enabled in Tailscale Admin Console
+MAIN_PID=$$
+if [ -n "${TS_DNS_NAME}" ] && [ "${ADVERTISE_TAILSCALE_IP:-true}" = "true" ] && [ "${TS_CERT_READY}" != "true" ]; then
+    (
+        while true; do
+            sleep 10
+            if tailscale --socket="${TS_SOCKET}" status --json 2>/dev/null | grep -q '"CertDomains": *\['; then
+                log "Detected Tailscale HTTPS Certificates enabled! Restarting container to provision TLS certificate..."
+                kill -TERM "${MAIN_PID}" 2>/dev/null || true
+                break
+            fi
+        done
+    ) &
+fi
 
 # 6. Trap signals for clean shutdown
 PLEX_PID=""

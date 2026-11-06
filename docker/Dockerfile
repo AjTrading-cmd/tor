@@ -25,6 +25,7 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && \
         iproute2 \
         iptables \
         locales \
+        openssl \
         procps \
         gosu \
         tzdata \
@@ -77,6 +78,6 @@ EXPOSE 32400/tcp 8324/tcp 32469/tcp 1900/udp 5353/udp 32410/udp 32412/udp 32413/
 VOLUME ["/config", "/transcode", "/media", "/var/lib/tailscale"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:32400/identity >/dev/null && tailscale status >/dev/null || exit 1
+    CMD env -u LD_LIBRARY_PATH curl -fsS http://127.0.0.1:32400/identity >/dev/null && tailscale --socket=/var/run/tailscale/tailscaled.sock status >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

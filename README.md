@@ -107,3 +107,28 @@ Use `inspect_video_files.py` to scan all `.mkv` and `.mp4` files in a directory 
 
 - `--no-recursive`: Only inspect the top-level directory without searching subdirectories.
 
+---
+
+## 4. Plex Media Server + Tailscale Docker Setup (`docker/`)
+
+The [`docker/`](docker/README.md) directory contains a Docker Compose setup that runs **Plex Media Server** and **Tailscale** together inside a single Debian Bookworm container with automatic Tailscale HTTPS certificate provisioning for full-quality direct streaming (no 1–2 Mbps Plex Relay bottleneck) across remote networks, PCs, and Apple TVs.
+
+### Quick Start
+
+```bash
+cd docker
+cp .env.example .env
+# Edit .env with your TS_AUTHKEY, PLEX_CLAIM, and MEDIA_DIR
+docker compose up -d --build
+```
+
+### Direct Access over Tailscale
+
+Once Tailscale and **HTTPS Certificates** (at [login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns)) are enabled on your tailnet:
+
+- **PC / Browser (recommended bookmark):** `https://plex-server.<your-tailnet>.ts.net:32400/web`
+- **Apple TV / Mobile Apps:** Connect the Tailscale app on the device and open the native Plex app — it automatically discovers and streams directly via `https://plex-server.<your-tailnet>.ts.net:32400`.
+
+See [`docker/README.md`](docker/README.md) for full setup, Apple TV configuration, quality/Direct Play settings, and troubleshooting.
+
+
