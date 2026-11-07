@@ -8,4 +8,4 @@ Each `.mkv` and `.mp4` file is scanned with **ClamAV** (`clamdscan` / `clamscan`
 
 | Month | Report Link | Total Scanned | Safe (`safe_files`) | Skeptical (`skeptical_files`) |
 | :--- | :--- | :---: | :---: | :---: |
-| **November 2026** | [`2026-11.md`](./2026-11.md) | 12 | 12 | 0 |
+| **November 2026** | [`2026-11.md`](./2026-11.md) | 13 | 13 | 0 |
