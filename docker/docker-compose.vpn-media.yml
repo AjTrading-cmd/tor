@@ -43,6 +43,8 @@ services:
       - OPENVPN_USER=${OPENVPN_USER:-}
       - OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-}
       - SERVER_COUNTRIES=${SERVER_COUNTRIES:-United States}
+      - SERVER_CITIES=${SERVER_CITIES:-Salt Lake City}
+      - SERVER_HOSTNAMES=${SERVER_HOSTNAMES:-}
       - SERVER_CATEGORIES=${SERVER_CATEGORIES:-P2P}
       # Built-in DNS over TLS (prevents ISP/router DNS blocks)
       - DOT=on
@@ -67,13 +69,22 @@ services:
       - TZ=${TZ:-America/Indiana/Indianapolis}
       - WEBUI_PORT=${QBIT_WEBUI_PORT:-8080}
       - TORRENTING_PORT=${QBIT_TORRENT_PORT:-45906}
+      - DOCKER_MODS=linuxserver/mods:universal-package-install
+      - INSTALL_PACKAGES=ffmpeg|clamav|git|github-cli
+      - GH_TOKEN=${GH_TOKEN:-}
     volumes:
       # Persist qBittorrent config & torrents in a dedicated directory or existing config
       - ${QBIT_CONFIG_DIR:-/home/juju/.config/qBittorrent-docker}:/config
+      # Persist ClamAV virus definitions across container restarts
+      - ${QBIT_CONFIG_DIR:-/home/juju/.config/qBittorrent-docker}/clamav:/var/lib/clamav
       # Mount your torrents folder at the exact same path so paths match host scripts
       - ${TORRENTS_DIR:-/home/juju/torrents}:/home/juju/torrents
       # Mount the repo so qBittorrent can also invoke scripts if needed
       - /home/juju/ghe/tor:/home/juju/ghe/tor
+      # Mount host git config so git commit & push work inside container
+      - /home/juju/.gitconfig:/config/.gitconfig:ro
+      # Share /tmp so pipeline_status_ui.py on the host sees live scan lock & status
+      - /tmp:/tmp
 
   jackett:
     image: lscr.io/linuxserver/jackett:latest
